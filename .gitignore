@@ -1,0 +1,23 @@
+# Dataset folders
+processed/
+mitdb/
+a-large-scale-12-lead-electrocardiogram-database-for-arrhythmia-study-1.0.0/
+
+# Model weights
+*.pth
+
+# Numpy arrays
+*.npy
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.env
+
+~$*

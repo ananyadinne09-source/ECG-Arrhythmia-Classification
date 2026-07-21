@@ -1,0 +1,10 @@
+              precision    recall  f1-score   support
+
+F             0.23       0.97      0.38       160
+N             1.00       0.94      0.97     18122
+Q             0.98       1.00      0.99      1609
+S             0.59       0.90      0.72       556
+V             0.88       0.96      0.92      1447
+
+Accuracy = 0.95
+Weighted F1 = 0.96
