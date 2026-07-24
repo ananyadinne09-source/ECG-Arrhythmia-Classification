@@ -138,16 +138,19 @@ def fix_signal_length(signal, target_len=TARGET_LEN):
 # 6. Z-score normalize each lead independently
 # ------------------------------------------------------------------
 def zscore_normalize(signal):
-    """
-    Applies z-score normalization (mean=0, std=1) independently for each
-    lead (column). Signal shape here is (time, leads).
-    A small epsilon avoids division by zero for flat/constant leads.
-    """
+
+    signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+
     mean = signal.mean(axis=0, keepdims=True)
     std = signal.std(axis=0, keepdims=True)
-    std[std == 0] = 1e-8
-    return (signal - mean) / std
 
+    std[std < 1e-8] = 1.0
+
+    signal = (signal - mean) / std
+
+    signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return signal
 
 # ------------------------------------------------------------------
 # 7. Main processing loop over all records
@@ -181,7 +184,14 @@ def process_all_records(record_paths, code_to_name):
             skipped_unknown_dx += 1
             continue
 
-        sig = record.p_signal  # shape (time, leads)
+        sig = record.p_signal
+
+        # Check raw signal
+        if np.isnan(sig).any() or np.isinf(sig).any():
+            print(f"Skipping corrupted RAW record: {path}")
+            skipped_errors += 1
+            continue
+
         if sig.shape[1] != NUM_LEADS:
             skipped_errors += 1
             continue
@@ -189,7 +199,12 @@ def process_all_records(record_paths, code_to_name):
         sig = fix_signal_length(sig, TARGET_LEN)
         sig = zscore_normalize(sig)
 
-        # Transpose to (leads, time) = (12, 5000) as required
+        # Check normalized signal
+        if np.isnan(sig).any() or np.isinf(sig).any():
+            print(f"Skipping corrupted NORMALIZED record: {path}")
+            skipped_errors += 1
+            continue
+
         sig = sig.T
 
         signals.append(sig.astype(np.float32))
