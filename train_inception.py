@@ -17,8 +17,8 @@ from sklearn.metrics import accuracy_score, f1_score
 DATA_DIR = r"C:\Users\anany\Documents\major project\processed"
 
 BATCH_SIZE = 64
-EPOCHS = 2
-LR = 1e-3
+EPOCHS = 30
+LR = 1e-4
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -64,6 +64,23 @@ print("Remaining classes:", len(np.unique(y)))
 # ============================================================
 # TRAIN TEST SPLIT
 # ============================================================
+def create_chunks(X, y, chunk_size=1000, stride=500):
+
+    X_chunks = []
+    y_chunks = []
+
+    for signal, label in zip(X, y):
+
+        total_length = signal.shape[1]
+
+        for start in range(0, total_length - chunk_size + 1, stride):
+
+            chunk = signal[:, start:start+chunk_size]
+
+            X_chunks.append(chunk)
+            y_chunks.append(label)
+
+    return np.array(X_chunks), np.array(y_chunks)
 
 X_train, X_test, y_train, y_test = train_test_split(
     X,
@@ -85,6 +102,16 @@ print("\nTrain :", X_train.shape)
 print("Validation :", X_val.shape)
 print("Test :", X_test.shape)
 
+print("\nCreating 2-second ECG chunks...")
+
+X_train, y_train = create_chunks(X_train, y_train)
+X_val, y_val = create_chunks(X_val, y_val)
+X_test, y_test = create_chunks(X_test, y_test)
+
+print("\nAfter Chunking")
+print("Train :", X_train.shape)
+print("Validation :", X_val.shape)
+print("Test :", X_test.shape)
 # ============================================================
 # CLASS WEIGHTS
 # ============================================================
@@ -100,25 +127,49 @@ weights = torch.tensor(weights, dtype=torch.float32).to(DEVICE)
 # ============================================================
 # DATASET
 # ============================================================
+def augment(signal):
+
+    # Gaussian noise
+    if np.random.rand() < 0.5:
+        signal = signal + np.random.normal(
+            0,
+            0.01,
+            signal.shape
+        ).astype(np.float32)
+
+    # Random scaling
+    if np.random.rand() < 0.5:
+        scale = np.random.uniform(0.9,1.1)
+        signal = signal * scale
+        signal = signal.astype(np.float32)
+    return signal
 
 class ECGDataset(Dataset):
+    def __init__(self,X,y,train=False):
 
-    def __init__(self, X, y):
-
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.long)
+        self.X = X
+        self.y = y
+        self.train = train
 
     def __len__(self):
 
         return len(self.X)
 
-    def __getitem__(self, idx):
+    def __getitem__(self,idx):
 
-        return self.X[idx], self.y[idx]
+        signal = self.X[idx]
+
+        if self.train:
+            signal = augment(signal)
+
+        signal = torch.tensor(signal,dtype=torch.float32)
+        label = torch.tensor(self.y[idx],dtype=torch.long)
+
+        return signal,label
 
 
 train_loader = DataLoader(
-    ECGDataset(X_train, y_train),
+    ECGDataset(X_train, y_train, train=True),
     batch_size=BATCH_SIZE,
     shuffle=True,
     num_workers=0,
@@ -127,13 +178,13 @@ train_loader = DataLoader(
 val_loader = DataLoader(
     ECGDataset(X_val, y_val),
     batch_size=BATCH_SIZE,
-    num_workers=0,
+    shuffle=False,
 )
 
 test_loader = DataLoader(
     ECGDataset(X_test, y_test),
     batch_size=BATCH_SIZE,
-    num_workers=0,
+    shuffle=False,
 )
 
 print("\nDataLoaders Ready.")
@@ -236,7 +287,7 @@ class InceptionTime(nn.Module):
         return self.fc(x)
 
 
-num_classes = len(np.unique(y))
+num_classes = len(np.unique(y_train))
 
 model = InceptionTime(num_classes).to(DEVICE)
 
@@ -258,7 +309,9 @@ scheduler = torch.optim.lr_scheduler.StepLR(
 # TRAINING
 # ============================================================
 
-best_val_acc = 0.0
+best_val_f1 = 0.0
+counter = 0
+patience = 7
 
 for epoch in range(EPOCHS):
 
@@ -328,16 +381,24 @@ for epoch in range(EPOCHS):
     val_f1 = f1_score(val_labels, val_preds, average="weighted")
 
     print(
-        f"Epoch {epoch+1}/{EPOCHS} | "
-        f"Train Loss {train_loss/len(train_loader):.4f} | "
-        f"Train Acc {train_acc:.4f} | "
-        f"Val Acc {val_acc:.4f} | "
-        f"Val F1 {val_f1:.4f}"
-    )
+    f"Epoch {epoch+1}/{EPOCHS} | "
+    f"Train Loss {train_loss/len(train_loader):.4f} | "
+    f"Val Loss {val_loss/len(val_loader):.4f} | "
+    f"Train Acc {train_acc:.4f} | "
+    f"Val Acc {val_acc:.4f} | "
+    f"Val F1 {val_f1:.4f}"
+)
 
-    if val_f1 > best_val_acc:
-        best_val_acc = val_acc
+    if val_f1 > best_val_f1:
+        best_val_f1 = val_f1
+        counter = 0
         torch.save(model.state_dict(), "best_inception.pth")
+    else:
+        counter += 1
+
+    if counter >= patience:
+        print("Early stopping")
+        break
 
 print("\nTraining Complete!")
 
@@ -363,7 +424,7 @@ with torch.no_grad():
         pred = outputs.argmax(dim=1)
 
         preds.extend(pred.cpu().numpy())
-        labels.extend(y_batch.numpy())
+        labels.extend(y_batch.cpu().numpy())
 
 print("\n==============================")
 print("TEST RESULTS")
