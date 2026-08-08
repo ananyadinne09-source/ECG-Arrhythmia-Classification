@@ -1,12 +1,14 @@
 import os
+import time
 import pickle
 import numpy as np
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import accuracy_score, f1_score
 
@@ -16,178 +18,200 @@ from sklearn.metrics import accuracy_score, f1_score
 
 DATA_DIR = r"C:\Users\anany\Documents\major project\processed"
 
-BATCH_SIZE = 64
-EPOCHS = 30
+BATCH_SIZE = 16
+EPOCHS = 20          # reduced for today's deadline (was 80)
 LR = 1e-4
+
+# Classes with fewer than this many samples are dropped entirely --
+# too few examples to learn or evaluate reliably, and they destabilize
+# class-weighted loss / sampling.
+MIN_SAMPLES_PER_CLASS = 30
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print("Device:", DEVICE)
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
+# ============================================================
+# DATASET
+# ============================================================
+
+class ECGDataset(Dataset):
+    """
+    Reads samples lazily by index from a memory-mapped X array.
+    Never materializes the full 10GB array in RAM -- only the
+    exact sample requested per __getitem__ call is read.
+    """
+
+    def __init__(self, X, indices, y, train=False):
+        self.X = X                # full memmap array (NOT sliced/copied)
+        self.indices = indices    # indices into X that belong to this split
+        self.y = y                # labels aligned with `indices`
+        self.train = train
+
+    def __len__(self):
+        return len(self.indices)
+
+    def augment(self, signal):
+        # Gaussian Noise
+        if np.random.rand() < 0.15:
+            signal = signal + np.random.normal(
+                0, 0.002, signal.shape
+            ).astype(np.float32)
+
+        # Amplitude Scaling
+        if np.random.rand() < 0.15:
+            signal = signal * np.random.uniform(0.98, 1.02)
+
+        return signal.astype(np.float32)
+
+    def __getitem__(self, idx):
+        real_idx = self.indices[idx]
+        # Single-sample read from the memmap -- cheap, no full-array copy.
+        signal = np.asarray(self.X[real_idx], dtype=np.float32)
+
+        if self.train:
+            signal = self.augment(signal)
+
+        return (
+            torch.from_numpy(signal),
+            torch.tensor(self.y[idx], dtype=torch.long)
+        )
+
 
 # ============================================================
 # LOAD DATA
 # ============================================================
 
-print("\nLoading processed dataset...")
+def load_data():
 
-X = np.load(os.path.join(DATA_DIR, "X.npy"))
-y = np.load(os.path.join(DATA_DIR, "y.npy"))
+    print("\nLoading Processed Dataset...")
 
-with open(os.path.join(DATA_DIR, "label_encoder.pkl"), "rb") as f:
-    label_encoder = pickle.load(f)
+    X = np.load(os.path.join(DATA_DIR, "X.npy"), mmap_mode="r")  # stays memory-mapped
+    y = np.load(os.path.join(DATA_DIR, "y.npy"))
 
-print("X Shape :", X.shape)
-print("y Shape :", y.shape)
-print("Classes :", len(label_encoder.classes_))
+    with open(os.path.join(DATA_DIR, "label_encoder.pkl"), "rb") as f:
+        old_encoder = pickle.load(f)
 
-# ----------------------------------------------------
-# Remove classes having fewer than 2 samples
-# ----------------------------------------------------
-unique, counts = np.unique(y, return_counts=True)
+    print("X Shape :", X.shape)
+    print("y Shape :", y.shape)
+    print("Classes :", len(old_encoder.classes_))
 
-valid_classes = unique[counts >= 2]
+    unique, counts = np.unique(y, return_counts=True)
+    valid = unique[counts >= MIN_SAMPLES_PER_CLASS]
 
-mask = np.isin(y, valid_classes)
+    # Work with INDICES only -- never slice/copy the big array itself.
+    valid_mask = np.isin(y, valid)
+    valid_indices = np.where(valid_mask)[0]
+    y_valid = y[valid_mask]
 
-X = X[mask]
-y = y[mask]
+    print(f"\nDropping {len(unique) - len(valid)} classes with "
+          f"< {MIN_SAMPLES_PER_CLASS} samples")
+    print(f"Classes kept: {len(valid)} / {len(unique)}")
 
-from sklearn.preprocessing import LabelEncoder
+    encoder = LabelEncoder()
+    y_valid = encoder.fit_transform(y_valid)
 
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(y)
+    print("\nRemaining Classes :", len(np.unique(y_valid)))
+    # Save class-index -> readable name mapping for confusion matrix / Grad-CAM
+    with open("class_names.pkl", "wb") as f:
+        pickle.dump({"old_encoder": old_encoder, "new_encoder": encoder}, f)
+    # Split INDICES + labels, not X itself.
+    idx_train, idx_test, y_train, y_test = train_test_split(
+        valid_indices, y_valid,
+        test_size=0.20,
+        random_state=42,
+        stratify=y_valid
+    )
 
-print("\nRemoved extremely rare classes")
-print("New X shape:", X.shape)
-print("New y shape:", y.shape)
-print("Remaining classes:", len(np.unique(y)))
+    idx_train, idx_val, y_train, y_val = train_test_split(
+        idx_train, y_train,
+        test_size=0.10,
+        random_state=42,
+        stratify=y_train
+    )
+
+    print("\nClass Distribution (Training Set):")
+    unique, counts = np.unique(y_train, return_counts=True)
+    for u, c in zip(unique, counts):
+        print(f"Class {u}: {c} samples")
+
+    class_weights_np = compute_class_weight(
+        class_weight="balanced",
+        classes=np.unique(y_train),
+        y=y_train
+    )
+    class_weights = torch.tensor(class_weights_np, dtype=torch.float32, device=DEVICE)
+
+    # WeightedRandomSampler handles class balance during training.
+    # (Loss is NOT also weighted -- see build_model -- stacking both
+    # over-corrects and collapses validation performance.)
+    sample_weights = class_weights_np[y_train]
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    train_loader = DataLoader(
+        ECGDataset(X, idx_train, y_train, train=True),
+        batch_size=BATCH_SIZE,
+        sampler=sampler,
+        num_workers=0,           # Windows + large memmap array: keep 0
+        pin_memory=False,
+        persistent_workers=False
+    )
+
+    val_loader = DataLoader(
+        ECGDataset(X, idx_val, y_val),
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False
+    )
+
+    test_loader = DataLoader(
+        ECGDataset(X, idx_test, y_test),
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False
+    )
+
+    return (
+        train_loader,
+        val_loader,
+        test_loader,
+        class_weights,
+        len(np.unique(y_train))
+    )
+
 # ============================================================
-# TRAIN TEST SPLIT
-# ============================================================
-def create_chunks(X, y, chunk_size=1000, stride=500):
-
-    X_chunks = []
-    y_chunks = []
-
-    for signal, label in zip(X, y):
-
-        total_length = signal.shape[1]
-
-        for start in range(0, total_length - chunk_size + 1, stride):
-
-            chunk = signal[:, start:start+chunk_size]
-
-            X_chunks.append(chunk)
-            y_chunks.append(label)
-
-    return np.array(X_chunks), np.array(y_chunks)
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y,
-)
-
-X_train, X_val, y_train, y_val = train_test_split(
-    X_train,
-    y_train,
-    test_size=0.1,
-    random_state=42,
-    stratify=y_train,
-)
-
-print("\nTrain :", X_train.shape)
-print("Validation :", X_val.shape)
-print("Test :", X_test.shape)
-
-print("\nCreating 2-second ECG chunks...")
-
-X_train, y_train = create_chunks(X_train, y_train)
-X_val, y_val = create_chunks(X_val, y_val)
-X_test, y_test = create_chunks(X_test, y_test)
-
-print("\nAfter Chunking")
-print("Train :", X_train.shape)
-print("Validation :", X_val.shape)
-print("Test :", X_test.shape)
-# ============================================================
-# CLASS WEIGHTS
+# SQUEEZE AND EXCITATION BLOCK
 # ============================================================
 
-weights = compute_class_weight(
-    class_weight="balanced",
-    classes=np.unique(y_train),
-    y=y_train,
-)
+class SEBlock(nn.Module):
 
-weights = torch.tensor(weights, dtype=torch.float32).to(DEVICE)
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels),
+            nn.Sigmoid()
+        )
 
-# ============================================================
-# DATASET
-# ============================================================
-def augment(signal):
+    def forward(self, x):
+        b, c, _ = x.size()
+        y = self.pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1)
+        return x * y
 
-    # Gaussian noise
-    if np.random.rand() < 0.5:
-        signal = signal + np.random.normal(
-            0,
-            0.01,
-            signal.shape
-        ).astype(np.float32)
-
-    # Random scaling
-    if np.random.rand() < 0.5:
-        scale = np.random.uniform(0.9,1.1)
-        signal = signal * scale
-        signal = signal.astype(np.float32)
-    return signal
-
-class ECGDataset(Dataset):
-    def __init__(self,X,y,train=False):
-
-        self.X = X
-        self.y = y
-        self.train = train
-
-    def __len__(self):
-
-        return len(self.X)
-
-    def __getitem__(self,idx):
-
-        signal = self.X[idx]
-
-        if self.train:
-            signal = augment(signal)
-
-        signal = torch.tensor(signal,dtype=torch.float32)
-        label = torch.tensor(self.y[idx],dtype=torch.long)
-
-        return signal,label
-
-
-train_loader = DataLoader(
-    ECGDataset(X_train, y_train, train=True),
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=0,
-)
-
-val_loader = DataLoader(
-    ECGDataset(X_val, y_val),
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-)
-
-test_loader = DataLoader(
-    ECGDataset(X_test, y_test),
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-)
-
-print("\nDataLoaders Ready.")
 
 # ============================================================
 # INCEPTION BLOCK
@@ -195,240 +219,395 @@ print("\nDataLoaders Ready.")
 
 class InceptionBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels=32):
-
+    def __init__(self, in_channels, out_channels=64):
         super().__init__()
 
-        self.b1 = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=9,
-            padding=4,
+        self.branch1 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size=9, padding=4, bias=False),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True)
         )
 
-        self.b2 = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=19,
-            padding=9,
+        self.branch2 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size=19, padding=9, bias=False),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True)
         )
 
-        self.b3 = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=39,
-            padding=19,
+        self.branch3 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size=39, padding=19, bias=False),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True)
         )
 
-        self.pool = nn.Sequential(
-
-            nn.MaxPool1d(
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ),
-
-            nn.Conv1d(
-                in_channels,
-                out_channels,
-                kernel_size=1,
-            ),
+        self.branch4 = nn.Sequential(
+            nn.MaxPool1d(kernel_size=3, stride=1, padding=1),
+            nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True)
         )
 
         self.bn = nn.BatchNorm1d(out_channels * 4)
-
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
+        self.se = SEBlock(out_channels * 4)
 
     def forward(self, x):
+        b1 = self.branch1(x)
+        b2 = self.branch2(x)
+        b3 = self.branch3(x)
+        b4 = self.branch4(x)
 
-        x1 = self.b1(x)
-        x2 = self.b2(x)
-        x3 = self.b3(x)
-        x4 = self.pool(x)
-
-        x = torch.cat([x1, x2, x3, x4], dim=1)
-
+        x = torch.cat([b1, b2, b3, b4], dim=1)
         x = self.bn(x)
+        x = self.relu(x)
+        x = self.se(x)
+        return x
 
-        return self.relu(x)
 
 # ============================================================
-# MODEL
+# RESIDUAL BLOCK
+# ============================================================
+
+class ResidualInception(nn.Module):
+
+    def __init__(self, channels):
+        super().__init__()
+        self.block1 = InceptionBlock(channels)
+        self.block2 = InceptionBlock(channels)
+        self.block3 = InceptionBlock(channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        identity = x
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
+        x = x + identity
+        x = self.relu(x)
+        return x
+
+
+# ============================================================
+# INCEPTIONTIME MODEL
 # ============================================================
 
 class InceptionTime(nn.Module):
 
     def __init__(self, num_classes):
-
         super().__init__()
-
-        self.block1 = InceptionBlock(12)
-
-        self.block2 = InceptionBlock(128)
-
-        self.block3 = InceptionBlock(128)
-
-        self.gap = nn.AdaptiveAvgPool1d(1)
-
-        self.fc = nn.Linear(128, num_classes)
+        self.stem = InceptionBlock(12)
+        self.res1 = ResidualInception(256)
+        self.res2 = ResidualInception(256)
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.dropout = nn.Dropout(0.3)
+        self.classifier = nn.Linear(256, num_classes)
 
     def forward(self, x):
+        x = self.stem(x)
+        x = self.res1(x)
+        x = self.res2(x)
+        x = self.global_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.dropout(x)
+        x = self.classifier(x)
+        return x
 
-        x = self.block1(x)
-
-        x = self.block2(x)
-
-        x = self.block3(x)
-
-        x = self.gap(x)
-
-        x = x.squeeze(-1)
-
-        return self.fc(x)
-
-
-num_classes = len(np.unique(y_train))
-
-model = InceptionTime(num_classes).to(DEVICE)
-
-print(model)
-
-criterion = nn.CrossEntropyLoss(weight=weights)
-
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=LR,
-)
-
-scheduler = torch.optim.lr_scheduler.StepLR(
-    optimizer,
-    step_size=5,
-    gamma=0.5,
-)
 # ============================================================
-# TRAINING
+# BUILD MODEL
 # ============================================================
 
-best_val_f1 = 0.0
-counter = 0
-patience = 7
+def build_model(num_classes, class_weights):
 
-for epoch in range(EPOCHS):
+    model = InceptionTime(num_classes).to(DEVICE)
 
-    # ---------------- TRAIN ----------------
+    # NOTE: loss is intentionally NOT class-weighted here.
+    # WeightedRandomSampler (in load_data) already balances class
+    # exposure during training. Applying class_weights on top of that
+    # double-corrects and causes validation collapse (confirmed earlier).
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.02)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=LR,
+        weight_decay=5e-5
+    )
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=EPOCHS,
+        eta_min=1e-6
+    )
+
+    scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    print(model)
+    print(f"\nTotal Parameters : {total_params:,}")
+    print(f"Trainable Params : {trainable_params:,}")
+
+    return model, criterion, optimizer, scheduler, scaler
+
+# ============================================================
+# TRAIN ONE EPOCH
+# ============================================================
+
+def train_one_epoch(model, loader, criterion, optimizer, scaler):
+
     model.train()
 
-    train_loss = 0
-    train_preds = []
-    train_labels = []
+    running_loss = 0.0
+    predictions = []
+    labels = []
 
-    for batch_idx, (x, y_batch) in enumerate(train_loader):
+    epoch_start = time.time()
 
-        if batch_idx % 100 == 0:
-            print(f"Epoch {epoch+1} | Batch {batch_idx}/{len(train_loader)}")
+    for batch_idx, (signals, targets) in enumerate(loader):
 
-        x = x.to(DEVICE)
-        y_batch = y_batch.to(DEVICE)
+        if batch_idx % 10 == 0:
+            elapsed = time.time() - epoch_start
+            rate = (batch_idx + 1) / elapsed if elapsed > 0 else 0
+            eta_min = (len(loader) - batch_idx) / rate / 60 if rate > 0 else 0
+            ram_gb = __import__("psutil").Process().memory_info().rss / 1024**3
+            print(
+                f"Batch {batch_idx}/{len(loader)} | "
+                f"{rate:.2f} batch/s | ETA {eta_min:.1f} min | RAM {ram_gb:.2f} GB",
+                end="\r"
+            )
 
-        optimizer.zero_grad()
+        signals = signals.to(DEVICE, non_blocking=True)
+        targets = targets.to(DEVICE, non_blocking=True)
 
-        outputs = model(x)
+        optimizer.zero_grad(set_to_none=True)
 
-        loss = criterion(outputs, y_batch)
+        with torch.autocast(
+            device_type=DEVICE.type,
+            dtype=torch.float16,
+            enabled=torch.cuda.is_available()
+        ):
+            outputs = model(signals)
+            loss = criterion(outputs, targets)
 
-        loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
 
-        optimizer.step()
-
-        train_loss += loss.item()
+        running_loss += loss.item()
 
         preds = outputs.argmax(dim=1)
+        predictions.extend(preds.detach().cpu().numpy())
+        labels.extend(targets.detach().cpu().numpy())
 
-        train_preds.extend(preds.cpu().numpy())
-        train_labels.extend(y_batch.cpu().numpy())
+    train_loss = running_loss / len(loader)
+    train_acc = accuracy_score(labels, predictions)
+    train_f1 = f1_score(labels, predictions, average="weighted")
 
-    scheduler.step()
+    return train_loss, train_acc, train_f1
 
-    train_acc = accuracy_score(train_labels, train_preds)
-    train_f1 = f1_score(train_labels, train_preds, average="weighted")
 
-    # ---------------- VALIDATION ----------------
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate(model, loader, criterion):
+
     model.eval()
 
-    val_loss = 0
-    val_preds = []
-    val_labels = []
+    running_loss = 0.0
+    predictions = []
+    labels = []
 
     with torch.no_grad():
+        for signals, targets in loader:
 
-        for x, y_batch in val_loader:
+            signals = signals.to(DEVICE, non_blocking=True)
+            targets = targets.to(DEVICE, non_blocking=True)
 
-            x = x.to(DEVICE)
-            y_batch = y_batch.to(DEVICE)
+            with torch.autocast(
+                device_type=DEVICE.type,
+                dtype=torch.float16,
+                enabled=torch.cuda.is_available()
+            ):
+                outputs = model(signals)
+                loss = criterion(outputs, targets)
 
-            outputs = model(x)
-
-            loss = criterion(outputs, y_batch)
-
-            val_loss += loss.item()
+            running_loss += loss.item()
 
             preds = outputs.argmax(dim=1)
+            predictions.extend(preds.cpu().numpy())
+            labels.extend(targets.cpu().numpy())
 
-            val_preds.extend(preds.cpu().numpy())
-            val_labels.extend(y_batch.cpu().numpy())
+    val_loss = running_loss / len(loader)
+    val_acc = accuracy_score(labels, predictions)
+    val_f1 = f1_score(labels, predictions, average="weighted")
 
-    val_acc = accuracy_score(val_labels, val_preds)
-    val_f1 = f1_score(val_labels, val_preds, average="weighted")
-
-    print(
-    f"Epoch {epoch+1}/{EPOCHS} | "
-    f"Train Loss {train_loss/len(train_loader):.4f} | "
-    f"Val Loss {val_loss/len(val_loader):.4f} | "
-    f"Train Acc {train_acc:.4f} | "
-    f"Val Acc {val_acc:.4f} | "
-    f"Val F1 {val_f1:.4f}"
-)
-
-    if val_f1 > best_val_f1:
-        best_val_f1 = val_f1
-        counter = 0
-        torch.save(model.state_dict(), "best_inception.pth")
-    else:
-        counter += 1
-
-    if counter >= patience:
-        print("Early stopping")
-        break
-
-print("\nTraining Complete!")
+    return val_loss, val_acc, val_f1
 
 # ============================================================
-# TEST
+# TRAIN MODEL
 # ============================================================
 
-model.load_state_dict(torch.load("best_inception.pth", map_location=DEVICE))
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, scaler):
 
-model.eval()
+    best_f1 = 0.0
+    patience = 6          # reduced for today's deadline (was 15)
+    wait = 0
 
-preds = []
-labels = []
+    torch.cuda.empty_cache()
 
-with torch.no_grad():
+    for epoch in range(EPOCHS):
 
-    for x, y_batch in test_loader:
+        print("\n" + "=" * 60)
+        print(f"Epoch {epoch + 1}/{EPOCHS}")
+        print("=" * 60)
 
-        x = x.to(DEVICE)
+        epoch_start = time.time()
 
-        outputs = model(x)
+        train_loss, train_acc, train_f1 = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler
+        )
 
-        pred = outputs.argmax(dim=1)
+        val_loss, val_acc, val_f1 = validate(model, val_loader, criterion)
 
-        preds.extend(pred.cpu().numpy())
-        labels.extend(y_batch.cpu().numpy())
+        scheduler.step()
 
-print("\n==============================")
-print("TEST RESULTS")
-print("==============================")
+        epoch_time = time.time() - epoch_start
 
-print("Accuracy :", accuracy_score(labels, preds))
-print("Weighted F1 :", f1_score(labels, preds, average="weighted"))
+        print()
+        print(f"Train Loss : {train_loss:.4f} | Train Acc : {train_acc:.4f} | Train F1 : {train_f1:.4f}")
+        print(f"Val Loss   : {val_loss:.4f} | Val Acc : {val_acc:.4f} | Val F1 : {val_f1:.4f}")
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"Learning Rate : {current_lr:.7f}")
+        print(f"Epoch Time    : {epoch_time / 60:.1f} min")
+
+        if val_f1 > best_f1:
+            best_f1 = val_f1
+            wait = 0
+
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "best_f1": best_f1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict()
+                },
+                "best_inception.pth"
+            )
+
+            print()
+            print("Best model saved.")
+        else:
+            wait += 1
+            print()
+            print(f"No Improvement ({wait}/{patience})")
+
+        if wait >= patience:
+            print()
+            print("Early stopping triggered.")
+            break
+
+        torch.cuda.empty_cache()
+
+    print()
+    print("=" * 60)
+    print("Training Finished")
+    print("=" * 60)
+    print(f"Best Validation F1 : {best_f1:.4f}")
+
+    return best_f1
+
+# ============================================================
+# TEST MODEL
+# ============================================================
+
+def test_model(model, test_loader):
+
+    checkpoint = torch.load("best_inception.pth", map_location=DEVICE)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    predictions = []
+    labels = []
+    running_loss = 0.0
+    criterion = nn.CrossEntropyLoss()
+
+    with torch.no_grad():
+        for signals, targets in test_loader:
+
+            signals = signals.to(DEVICE, non_blocking=True)
+            targets = targets.to(DEVICE, non_blocking=True)
+
+            with torch.autocast(
+                device_type=DEVICE.type,
+                dtype=torch.float16,
+                enabled=torch.cuda.is_available()
+            ):
+                outputs = model(signals)
+                loss = criterion(outputs, targets)
+
+            running_loss += loss.item()
+
+            preds = outputs.argmax(dim=1)
+            predictions.extend(preds.cpu().numpy())
+            labels.extend(targets.cpu().numpy())
+
+    test_loss = running_loss / len(test_loader)
+    test_acc = accuracy_score(labels, predictions)
+    test_f1 = f1_score(labels, predictions, average="weighted")
+
+    print()
+    print("=" * 60)
+    print("FINAL TEST RESULTS")
+    print("=" * 60)
+    print(f"Test Loss    : {test_loss:.4f}")
+    print(f"Test Accuracy: {test_acc:.4f}")
+    print(f"Weighted F1  : {test_f1:.4f}")
+
+    return test_loss, test_acc, test_f1
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print(torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print(f"Total GPU Memory : {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        print(f"Allocated Memory : {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        print(f"Reserved Memory  : {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
+    train_loader, val_loader, test_loader, class_weights, num_classes = load_data()
+
+    model, criterion, optimizer, scheduler, scaler = build_model(
+        num_classes=num_classes,
+        class_weights=class_weights
+    )
+
+    print(f"\nModel is on device: {next(model.parameters()).device}")
+
+    print()
+    print("=" * 60)
+    print("STARTING TRAINING")
+    print("=" * 60)
+
+    best_f1 = train_model(
+        model, train_loader, val_loader, criterion, optimizer, scheduler, scaler
+    )
+
+    print()
+    print("=" * 60)
+    print("LOADING BEST MODEL")
+    print("=" * 60)
+
+    test_model(model, test_loader)
+
+    print()
+    print("=" * 60)
+    print("DONE")
+    print("=" * 60)
