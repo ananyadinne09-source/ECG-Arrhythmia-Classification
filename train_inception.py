@@ -27,6 +27,10 @@ LR = 1e-4
 # class-weighted loss / sampling.
 MIN_SAMPLES_PER_CLASS = 30
 
+# Set to None to use MIN_SAMPLES_PER_CLASS filtering (24-class setup).
+# Set to a number (e.g. 9) to instead keep only the N most frequent classes.
+TOP_N_CLASSES = 9
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 torch.backends.cudnn.benchmark = True
@@ -100,15 +104,22 @@ def load_data():
     print("Classes :", len(old_encoder.classes_))
 
     unique, counts = np.unique(y, return_counts=True)
-    valid = unique[counts >= MIN_SAMPLES_PER_CLASS]
+
+    if TOP_N_CLASSES is not None:
+        # Keep only the N most frequent classes (matches teammate's 9-class setup)
+        top_n_idx = np.argsort(counts)[::-1][:TOP_N_CLASSES]
+        valid = unique[top_n_idx]
+        print(f"\nUsing TOP_N_CLASSES = {TOP_N_CLASSES} (frequency-based selection)")
+    else:
+        valid = unique[counts >= MIN_SAMPLES_PER_CLASS]
+        print(f"\nDropping {len(unique) - len(valid)} classes with "
+              f"< {MIN_SAMPLES_PER_CLASS} samples")
 
     # Work with INDICES only -- never slice/copy the big array itself.
     valid_mask = np.isin(y, valid)
     valid_indices = np.where(valid_mask)[0]
     y_valid = y[valid_mask]
 
-    print(f"\nDropping {len(unique) - len(valid)} classes with "
-          f"< {MIN_SAMPLES_PER_CLASS} samples")
     print(f"Classes kept: {len(valid)} / {len(unique)}")
 
     encoder = LabelEncoder()
