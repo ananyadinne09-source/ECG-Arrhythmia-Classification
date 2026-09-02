@@ -17,6 +17,50 @@ import wfdb
 from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 
+EXCLUDED_CODES = {"55827005"}
+
+
+def canonicalize_label(primary_code, primary_dx_name):
+    if primary_dx_name is None:
+        return None
+
+    name = primary_dx_name.strip().lower()
+
+    # Remove 55827005
+    if primary_code in EXCLUDED_CODES:
+        return None
+
+    # Remove TWC
+    if name in {"twc", "t wave change"}:
+        return None
+
+    # Remove STTC
+    if name in {"sttc", "st-t change"}:
+        return None
+
+    # Merge AF + AFIB
+    if name in {"af", "afib", "atrial fibrillation"}:
+        return "Atrial Fibrillation"
+
+    # Keep SB
+    if name in {"sb", "sinus bradycardia"}:
+        return "Sinus Bradycardia"
+
+    # Keep SR
+    if name in {"sr", "sinus rhythm"}:
+        return "Sinus Rhythm"
+
+    # Keep ST
+    if name in {"st", "sinus tachycardia"}:
+        return "Sinus Tachycardia"
+
+    # Keep SVT
+    if name in {"svt", "supraventricular tachycardia"}:
+        return "Supraventricular Tachycardia"
+
+    # Everything else is removed
+    return None
+
 # ------------------------------------------------------------------
 # CONFIGURATION — EDIT THESE PATHS FOR YOUR LOCAL MACHINE
 # ------------------------------------------------------------------
@@ -178,9 +222,19 @@ def process_all_records(record_paths, code_to_name):
             continue
 
         fields = parse_header_fields(record.comments)
-        primary_dx_name = get_primary_diagnosis(fields["dx_raw"], code_to_name)
+        primary_code = fields["dx_raw"].split(",")[0].strip() if fields["dx_raw"] else None
 
-        if primary_dx_name is None:
+        primary_dx_name = get_primary_diagnosis(
+            fields["dx_raw"],
+            code_to_name
+        )
+
+        final_label = canonicalize_label(
+            primary_code,
+            primary_dx_name
+        )
+
+        if final_label is None:
             skipped_unknown_dx += 1
             continue
 
@@ -208,7 +262,7 @@ def process_all_records(record_paths, code_to_name):
         sig = sig.T
 
         signals.append(sig.astype(np.float32))
-        labels.append(primary_dx_name)
+        labels.append(final_label)
 
     print(f"\nSkipped (unknown/missing Dx): {skipped_unknown_dx}")
     print(f"Skipped (read/shape errors):  {skipped_errors}")
