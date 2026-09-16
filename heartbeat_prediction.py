@@ -1,72 +1,216 @@
 import numpy as np
 import torch
-from scipy.signal import find_peaks
-
-from train_inception import load_data, build_model, DEVICE
-
+import joblib
 
 # ============================================================
 # SETTINGS
 # ============================================================
 
-SAMPLING_RATE = 500
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-CHECKPOINT_PATH = "best_inception.pth"
+X_PATH = "processed/X_heartbeat_v2.npy"
+Y_PATH = "processed/y_heartbeat_v2.npy"
+CHECKPOINT_PATH = "best_inception_heartbeat.pth"
+ENCODER_PATH = "processed/label_encoder.pkl"
 
-# Same heartbeat window
-BEFORE_R = 0.20
-AFTER_R = 0.40
+
+# ============================================================
+# MODEL
+# ============================================================
+
+import torch.nn as nn
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _ = x.shape
+
+        y = self.pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1)
+
+        return x * y
+
+
+class InceptionBlock(nn.Module):
+
+    def __init__(self, in_channels):
+
+        super().__init__()
+
+        out_channels = 64
+
+        self.branch1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=9,
+            padding=4,
+            bias=False
+        )
+
+        self.branch2 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=19,
+            padding=9,
+            bias=False
+        )
+
+        self.branch3 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=39,
+            padding=19,
+            bias=False
+        )
+
+        self.branch4_pool = nn.MaxPool1d(
+            kernel_size=3,
+            stride=1,
+            padding=1
+        )
+
+        self.branch4_conv = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            bias=False
+        )
+
+        self.bn = nn.BatchNorm1d(256)
+        self.relu = nn.ReLU(inplace=True)
+        self.se = SEBlock(256)
+
+    def forward(self, x):
+
+        b1 = self.branch1(x)
+        b2 = self.branch2(x)
+        b3 = self.branch3(x)
+
+        b4 = self.branch4_pool(x)
+        b4 = self.branch4_conv(b4)
+
+        out = torch.cat(
+            [b1, b2, b3, b4],
+            dim=1
+        )
+
+        out = self.bn(out)
+        out = self.relu(out)
+        out = self.se(out)
+
+        return out
+
+
+class ResidualInception(nn.Module):
+
+    def __init__(self, channels=256):
+
+        super().__init__()
+
+        self.block1 = InceptionBlock(channels)
+        self.block2 = InceptionBlock(channels)
+        self.block3 = InceptionBlock(channels)
+
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+
+        identity = x
+
+        out = self.block1(x)
+        out = self.block2(out)
+        out = self.block3(out)
+
+        out = out + identity
+        out = self.relu(out)
+
+        return out
+
+
+class InceptionTime(nn.Module):
+
+    def __init__(self, num_classes=5):
+
+        super().__init__()
+
+        self.stem = InceptionBlock(12)
+
+        self.res1 = ResidualInception(256)
+        self.res2 = ResidualInception(256)
+
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+
+        self.dropout = nn.Dropout(0.3)
+
+        self.classifier = nn.Linear(
+            256,
+            num_classes
+        )
+
+    def forward(self, x):
+
+        x = self.stem(x)
+        x = self.res1(x)
+        x = self.res2(x)
+
+        x = self.global_pool(x)
+        x = x.squeeze(-1)
+
+        x = self.dropout(x)
+
+        x = self.classifier(x)
+
+        return x
 
 
 # ============================================================
 # LOAD CLASS NAMES
 # ============================================================
 
-import joblib
-
-encoder = joblib.load(
-    r"C:\Users\anany\Documents\major project\processed\label_encoder.pkl"
-)
+encoder = joblib.load(ENCODER_PATH)
 
 class_names = list(encoder.classes_)
 
 print("Classes:")
+
 for i, name in enumerate(class_names):
     print(i, ":", name)
 
 
 # ============================================================
-# LOAD DATA
+# LOAD HEARTBEAT DATASET
 # ============================================================
 
 X = np.load(
-    r"C:\Users\anany\Documents\major project\processed\X.npy",
+    X_PATH,
     mmap_mode="r"
 )
 
-y = np.load(
-    r"C:\Users\anany\Documents\major project\processed\y.npy"
-)
+y = np.load(Y_PATH)
 
-print("\nDataset shape:", X.shape)
+print("\nHeartbeat dataset shape:", X.shape)
+print("Labels shape:", y.shape)
 
 
 # ============================================================
-# LOAD MODEL
+# LOAD HEARTBEAT MODEL
 # ============================================================
 
-(
-    train_loader,
-    val_loader,
-    test_loader,
-    class_weights,
-    num_classes
-) = load_data()
-
-model, criterion, optimizer, scheduler, scaler = build_model(
-    num_classes,
-    class_weights
-)
+model = InceptionTime(
+    num_classes=len(class_names)
+).to(DEVICE)
 
 checkpoint = torch.load(
     CHECKPOINT_PATH,
@@ -74,184 +218,98 @@ checkpoint = torch.load(
 )
 
 if "model_state_dict" in checkpoint:
+
     model.load_state_dict(
         checkpoint["model_state_dict"]
     )
+
 else:
+
     model.load_state_dict(checkpoint)
 
 model.eval()
 
-print("\nModel loaded successfully.")
+print("\nHeartbeat model loaded successfully.")
+print("Device:", DEVICE)
 
 
 # ============================================================
-# SELECT ONE ECG
+# SELECT ONE HEARTBEAT
 # ============================================================
 
 sample_index = 0
 
-signal = np.array(X[sample_index], dtype=np.float32)
+heartbeat = np.array(
+    X[sample_index],
+    dtype=np.float32
+)
 
 actual_id = int(y[sample_index])
 
-print("\nSelected ECG:", sample_index)
-print("Actual class:", class_names[actual_id])
-
-
-# ============================================================
-# R-PEAK DETECTION
-# ============================================================
-
-# Lead II
-ecg = signal[1]
-
-peaks, _ = find_peaks(
-    ecg,
-    distance=int(0.25 * SAMPLING_RATE),
-    prominence=0.5
-)
-
-print("\nDetected R-peaks:", len(peaks))
-
-
-# ============================================================
-# TEST ALL DETECTED HEARTBEATS
-# ============================================================
-
-print("\n")
-print("=" * 70)
-print("TESTING INDIVIDUAL HEARTBEATS")
+print("\n" + "=" * 70)
+print("SINGLE HEARTBEAT PREDICTION")
 print("=" * 70)
 
-results = []
-
-for beat_number, peak in enumerate(peaks):
-
-    # --------------------------------------------
-    # Extract heartbeat window
-    # --------------------------------------------
-
-    start = peak - int(
-        BEFORE_R * SAMPLING_RATE
-    )
-
-    end = peak + int(
-        AFTER_R * SAMPLING_RATE
-    )
-
-    # Skip beats too close to recording boundaries
-    if start < 0 or end > signal.shape[1]:
-        continue
-
-    # --------------------------------------------
-    # Create heartbeat-only signal
-    # --------------------------------------------
-
-    heartbeat_only = np.zeros_like(signal)
-
-    heartbeat_only[:, start:end] = signal[:, start:end]
-
-    # --------------------------------------------
-    # Model prediction
-    # --------------------------------------------
-
-    heartbeat_tensor = torch.from_numpy(
-        heartbeat_only
-    ).unsqueeze(0).to(DEVICE)
-
-    with torch.no_grad():
-
-        logits = model(
-            heartbeat_tensor
-        )
-
-        probabilities = torch.softmax(
-            logits,
-            dim=1
-        )[0]
-
-        prediction = int(
-            logits.argmax(dim=1).item()
-        )
-
-        confidence = probabilities[
-            prediction
-        ].item()
-
-    # --------------------------------------------
-    # Store result
-    # --------------------------------------------
-
-    results.append({
-        "beat": beat_number + 1,
-        "peak": peak,
-        "time": peak / SAMPLING_RATE,
-        "prediction": prediction,
-        "confidence": confidence,
-        "probabilities": probabilities.cpu().numpy()
-    })
-
-
-# ============================================================
-# PRINT ALL RESULTS
-# ============================================================
-
-print("\nIndividual heartbeat predictions:\n")
-
-for result in results:
-
-    print(
-        f"Beat {result['beat']:2d} | "
-        f"Time: {result['time']:.3f}s | "
-        f"Prediction: "
-        f"{class_names[result['prediction']]:30s} | "
-        f"Confidence: "
-        f"{result['confidence'] * 100:.2f}%"
-    )
-
-
-# ============================================================
-# FIND HIGHEST-CONFIDENCE HEARTBEAT
-# ============================================================
-
-best_result = max(
-    results,
-    key=lambda x: x["confidence"]
-)
-
-
-print("\n")
-print("=" * 70)
-print("BEST SINGLE HEARTBEAT")
-print("=" * 70)
+print("\nSample index:", sample_index)
 
 print(
-    "\nHeartbeat number:",
-    best_result["beat"]
+    "Input shape:",
+    heartbeat.shape
 )
 
 print(
-    "R-peak time:",
-    f"{best_result['time']:.3f} seconds"
+    "Actual class:",
+    class_names[actual_id]
 )
 
+
+# ============================================================
+# PREDICTION
+# ============================================================
+
+heartbeat_tensor = torch.from_numpy(
+    heartbeat
+).unsqueeze(0).to(DEVICE)
+
+with torch.no_grad():
+
+    logits = model(
+        heartbeat_tensor
+    )
+
+    probabilities = torch.softmax(
+        logits,
+        dim=1
+    )[0]
+
+    prediction = int(
+        logits.argmax(dim=1).item()
+    )
+
+    confidence = probabilities[
+        prediction
+    ].item()
+
+
+# ============================================================
+# RESULT
+# ============================================================
+
+print("\nPredicted class:")
+
 print(
-    "Prediction:",
-    class_names[
-        best_result["prediction"]
-    ]
+    class_names[prediction]
 )
 
 print(
     "Confidence:",
-    f"{best_result['confidence'] * 100:.2f}%"
+    f"{confidence * 100:.2f}%"
 )
 
 print("\nClass probabilities:")
 
 for i, probability in enumerate(
-    best_result["probabilities"]
+    probabilities.cpu().numpy()
 ):
 
     print(
