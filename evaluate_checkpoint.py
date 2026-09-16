@@ -54,6 +54,19 @@ if __name__ == "__main__":
     print("Best model loaded successfully.")
 
     # ============================================================
+    # CLASS NAMES
+    # ============================================================
+
+    with open("processed/label_encoder.pkl", "rb") as f:
+        label_encoder = pickle.load(f)
+
+    class_names = list(label_encoder.classes_)
+
+    print("\nClass order:")
+    for i, name in enumerate(class_names):
+        print(f"{i}: {name}")
+
+    # ============================================================
     # TEST MODEL
     # ============================================================
 
@@ -85,32 +98,21 @@ if __name__ == "__main__":
     labels = np.array(labels)
 
     # ============================================================
-    # CLASS NAMES
-    # ============================================================
-
-    # IMPORTANT:
-    # Change these ONLY if your label_encoder uses a different order.
-
-    
-
-    with open("processed/label_encoder.pkl", "rb") as f:
-        label_encoder = pickle.load(f)
-
-    class_names = list(label_encoder.classes_)
-
-    print("\nClass order:")
-    for i, name in enumerate(class_names):
-        print(f"{i}: {name}")
-
-    # ============================================================
     # ACCURACY & F1
     # ============================================================
 
     accuracy = accuracy_score(labels, predictions)
+
     weighted_f1 = f1_score(
         labels,
         predictions,
         average="weighted"
+    )
+
+    macro_f1 = f1_score(
+        labels,
+        predictions,
+        average="macro"
     )
 
     print("\n" + "=" * 60)
@@ -119,6 +121,7 @@ if __name__ == "__main__":
 
     print(f"Test Accuracy : {accuracy:.4f} ({accuracy * 100:.2f}%)")
     print(f"Weighted F1   : {weighted_f1:.4f} ({weighted_f1 * 100:.2f}%)")
+    print(f"Macro F1      : {macro_f1:.4f} ({macro_f1 * 100:.2f}%)")
 
     # ============================================================
     # CLASSIFICATION REPORT
@@ -155,7 +158,7 @@ if __name__ == "__main__":
     print(cm)
 
     # ============================================================
-    # PLOT CONFUSION MATRIX
+    # RAW CONFUSION MATRIX
     # ============================================================
 
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -177,17 +180,111 @@ if __name__ == "__main__":
     plt.ylabel("True Label")
     plt.tight_layout()
 
-    # Save image
     plt.savefig(
         "confusion_matrix.png",
         dpi=300,
         bbox_inches="tight"
     )
 
-    print("\nConfusion matrix saved as:")
+    print("\nRaw confusion matrix saved as:")
     print("confusion_matrix.png")
 
     plt.show()
+
+    # ============================================================
+    # NORMALIZED CONFUSION MATRIX
+    # ============================================================
+
+    cm_normalized = (
+        cm.astype(float)
+        / cm.sum(axis=1, keepdims=True)
+    ) * 100
+
+    print("\n" + "=" * 60)
+    print("NORMALIZED CONFUSION MATRIX (%)")
+    print("=" * 60)
+
+    np.set_printoptions(
+        precision=2,
+        suppress=True
+    )
+
+    print(cm_normalized)
+
+    # ============================================================
+    # PLOT NORMALIZED CONFUSION MATRIX
+    # ============================================================
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    disp_norm = ConfusionMatrixDisplay(
+        confusion_matrix=cm_normalized,
+        display_labels=class_names
+    )
+
+    disp_norm.plot(
+        ax=ax,
+        cmap="Blues",
+        values_format=".2f",
+        xticks_rotation=45
+    )
+
+    plt.title(
+        "Normalized Confusion Matrix - InceptionTime ECG Classifier"
+    )
+
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+
+    plt.tight_layout()
+
+    plt.savefig(
+        "confusion_matrix_normalized.png",
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    print("\nNormalized confusion matrix saved as:")
+    print("confusion_matrix_normalized.png")
+
+    plt.show()
+
+    # ============================================================
+    # FIND MISCLASSIFIED SAMPLES
+    # ============================================================
+
+    misclassified = np.where(labels != predictions)[0]
+
+    print("\n" + "=" * 60)
+    print("MISCLASSIFIED TEST SAMPLES")
+    print("=" * 60)
+
+    print(f"Total misclassified samples: {len(misclassified)}")
+
+    print("\nFirst 30 misclassified samples:")
+
+    for idx in misclassified[:30]:
+
+        actual = class_names[labels[idx]]
+        predicted = class_names[predictions[idx]]
+
+        print(
+            f"Test index {idx:4d} | "
+            f"Actual: {actual:35s} | "
+            f"Predicted: {predicted}"
+        )
+
+    # ============================================================
+    # SAVE MISCLASSIFIED INDICES
+    # ============================================================
+
+    np.save(
+        "misclassified_test_indices.npy",
+        misclassified
+    )
+
+    print("\nMisclassified indices saved as:")
+    print("misclassified_test_indices.npy")
 
     # ============================================================
     # DONE
