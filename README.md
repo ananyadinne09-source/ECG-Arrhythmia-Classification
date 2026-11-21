@@ -170,9 +170,10 @@ cd ECG-Arrhythmia-Classification
 
 ### Install Dependencies
 
-Install the Python packages required by the project scripts.
+Install the required Python dependencies using:
 
-The exact dependency list should be determined from the import statements in the source files.
+```bash
+pip install -r requirements.txt
 
 ### Run the Project
 
