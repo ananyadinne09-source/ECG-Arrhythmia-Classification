@@ -181,13 +181,13 @@ Open the project folder in Visual Studio Code.
 Run the preprocessing script:
 
 ```bash
-python preprocess_chapman.py
+python src/preprocess_chapman.py
 ```
 
 Run the model training script:
 
 ```bash
-python train_inception.py
+python src/train_inception.py
 ```
 
 **Note:** The required ECG dataset must be obtained and configured separately before running the preprocessing and training workflow.
@@ -196,7 +196,7 @@ python train_inception.py
 
 For additional information about the project, refer to the presentation included in this repository:
 
-[View Project Presentation](XAI-Driven%20Analysis%20of%20Physiological%5B1%5D.pptx)
+[View Project Presentation](presentation/TrustECG_Project_Presentation.pptx)
 
 ## ⚠️ Disclaimer
 
