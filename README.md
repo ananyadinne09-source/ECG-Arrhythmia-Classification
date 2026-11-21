@@ -119,22 +119,21 @@ The project also involved collaborative work on model development, classificatio
 | Visualization | Matplotlib |
 | Development Environment | Visual Studio Code |
 
-## 📂 Repository Structure
-
-```text
 ECG-Arrhythmia-Classification/
+│
+├── src/
+│   ├── chapman_ecg.py
+│   ├── preprocess_chapman.py
+│   └── train_inception.py
+│
+├── notebooks/
+│   ├── chapman_ecg.ipynb
+│   └── ecg_model.ipynb
 │
 ├── results/
 │
-├── .gitignore
-├── README.md
-│
-├── chapman_ecg.ipynb
-├── ecg_model.ipynb
-│
-├── chapman_ecg.py
-├── preprocess_chapman.py
-├── train_inception.py
+├── presentation/
+│   └── TrustECG_Project_Presentation.pptx
 │
 ├── confusion_matrix.png
 ├── confusion_matrix_numbers.png
@@ -143,7 +142,8 @@ ECG-Arrhythmia-Classification/
 ├── output_corrected.png
 ├── outputmatrix[]withvalue.png
 │
-└── XAI-Driven Analysis of Physiological[1].pptx
+├── .gitignore
+└── README.md
 ```
 
 ## ⚙️ Getting Started
