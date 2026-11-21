@@ -69,23 +69,35 @@ The repository includes visual outputs generated during model development and ev
 
 The confusion matrix provides a visual representation of classification performance across different classes.
 
-![Confusion Matrix](confusion_matrix.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/confusion_matrix.png" width="75%" alt="Confusion Matrix"/>
+</p>
 
-![Confusion Matrix with Values](confusion_matrix_numbers.png)
+### Confusion Matrix with Values
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/confusion_matrix_numbers.png" width="75%" alt="Confusion Matrix with Values"/>
+</p>
 
 ### Grad-CAM Explainability
 
 Grad-CAM visualizations highlight signal regions relevant to the model's predictions.
 
-![Grad-CAM ECG Visualization](gradcam_ecg.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/gradcam_ecg.png" width="75%" alt="Grad-CAM ECG Visualization"/>
+</p>
 
-![Corrected Grad-CAM Result](corrected_gradcam_result.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/corrected_gradcam_result.png" width="75%" alt="Corrected Grad-CAM Result"/>
+</p>
 
 ### Model Outputs
 
-![ECG Model Output](output_corrected.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/output_corrected.png" width="75%" alt="ECG Model Output"/>
+</p>
 
-Additional result files and visualizations are available in the `results/` directory.
+Additional visualizations are available in the `results/` directory.
 
 ## 👩‍💻 My Contributions
 
