@@ -15,11 +15,11 @@
 
 ## 📌 Project Overview
 
-**TrustECG** is a deep learning-based ECG arrhythmia classification project developed to explore automated cardiac rhythm analysis with explainable artificial intelligence.
+**TrustECG** is a deep learning-based ECG arrhythmia classification project developed to explore automated cardiac rhythm analysis using Explainable Artificial Intelligence (XAI).
 
 The project focuses on classifying ECG signals into different cardiac rhythm categories while incorporating explainability techniques to make model predictions more interpretable.
 
-It combines deep learning-based classification with visual explanations, helping users understand which regions of an ECG signal contribute to a model's prediction.
+It combines deep learning-based classification with visual explanations, helping users understand which regions of an ECG signal contribute to a model's predictions.
 
 The project aims to make AI-based ECG analysis more understandable and transparent.
 
@@ -29,7 +29,7 @@ The project aims to make AI-based ECG analysis more understandable and transpare
 - Preprocess ECG signals for model training and evaluation.
 - Explore InceptionTime-based time-series classification.
 - Apply Explainable AI techniques to interpret model predictions.
-- Visualize important ECG signal regions using Grad-CAM.
+- Visualize relevant ECG signal regions using Grad-CAM.
 - Integrate model functionality with an application interface.
 
 ## 🧠 Methodology
@@ -39,8 +39,8 @@ The project follows a structured workflow:
 1. **Data Collection:** Work with ECG data from the Chapman ECG dataset.
 2. **Preprocessing:** Prepare ECG signals for model input and handle data quality issues.
 3. **Model Development:** Implement deep learning-based ECG classification using InceptionTime.
-4. **Classification:** Predict ECG rhythm categories.
-5. **Explainability:** Apply Grad-CAM to visualize signal regions influencing predictions.
+4. **Classification:** Generate predictions for ECG rhythm categories.
+5. **Explainability:** Apply Grad-CAM to visualize signal regions influencing model predictions.
 6. **Visualization:** Present classification outputs and explainability results.
 
 ## 🏗️ Model Architecture
@@ -57,9 +57,7 @@ In this project, InceptionTime is explored for learning relevant patterns from E
 
 Grad-CAM (Gradient-weighted Class Activation Mapping) is used to generate visual explanations of model predictions.
 
-It helps identify the regions of an ECG signal that contribute to the classification output.
-
-This provides an additional interpretability layer alongside the model's predictions.
+It helps identify regions of an ECG signal that contribute to the classification output, providing an interpretability layer alongside the model's predictions.
 
 ## 📊 Results & Visualizations
 
@@ -91,7 +89,7 @@ Grad-CAM visualizations highlight signal regions relevant to the model's predict
   <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/corrected_gradcam_result.png" width="75%" alt="Corrected Grad-CAM Result"/>
 </p>
 
-### Model Outputs
+### Model Output
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/ananyadinne09-source/ECG-Arrhythmia-Classification/main/output_corrected.png" width="75%" alt="ECG Model Output"/>
@@ -103,9 +101,9 @@ Additional visualizations are available in the `results/` directory.
 
 As a member of the project team, my primary responsibilities included:
 
-- **UI/Frontend Development:** Worked on developing the user interface for the ECG classification application.
-- **Frontend–Backend Integration:** Contributed to connecting frontend components with backend functionality.
-- **Application Integration:** Worked on presenting model outputs through the application interface.
+- **UI/Frontend Development:** Contributed to developing the user interface for the ECG classification application.
+- **Frontend–Backend Integration:** Worked on connecting frontend components with backend functionality.
+- **Application Integration:** Contributed to presenting model outputs through the application interface.
 
 The project also involved collaborative work on model development, classification, and explainability.
 
@@ -114,12 +112,12 @@ The project also involved collaborative work on model development, classificatio
 | Category | Technologies |
 |---|---|
 | Programming Language | Python |
-| Deep Learning | PyTorch |
+| Deep Learning Framework | PyTorch |
 | Model Architecture | InceptionTime |
 | Explainable AI | Grad-CAM |
 | Data Processing | NumPy, Pandas |
 | Visualization | Matplotlib |
-| Development | Jupyter Notebook |
+| Development Environment | Visual Studio Code |
 
 ## 📂 Repository Structure
 
@@ -128,10 +126,13 @@ ECG-Arrhythmia-Classification/
 │
 ├── results/
 │
+├── .gitignore
+├── README.md
+│
 ├── chapman_ecg.ipynb
-├── chapman_ecg.py
 ├── ecg_model.ipynb
 │
+├── chapman_ecg.py
 ├── preprocess_chapman.py
 ├── train_inception.py
 │
@@ -142,9 +143,7 @@ ECG-Arrhythmia-Classification/
 ├── output_corrected.png
 ├── outputmatrix[]withvalue.png
 │
-├── XAI-Driven Analysis of Physiological[1].pptx
-│
-└── README.md
+└── XAI-Driven Analysis of Physiological[1].pptx
 ```
 
 ## ⚙️ Getting Started
@@ -152,7 +151,7 @@ ECG-Arrhythmia-Classification/
 ### Prerequisites
 
 - Python 3.x
-- Jupyter Notebook
+- Visual Studio Code
 - PyTorch
 - Required Python libraries used by the project scripts
 - Access to the required ECG dataset
@@ -171,30 +170,33 @@ cd ECG-Arrhythmia-Classification
 
 ### Install Dependencies
 
-Install the Python packages required by the scripts and notebooks. Check the import statements in the source files for the complete dependency list.
+Install the Python packages required by the project scripts.
+
+The exact dependency list should be determined from the import statements in the source files.
 
 ### Run the Project
 
-Start by exploring the notebooks:
+Open the project folder in Visual Studio Code.
 
-```bash
-jupyter notebook
-```
-
-The main preprocessing and training scripts are:
+Run the preprocessing script:
 
 ```bash
 python preprocess_chapman.py
+```
+
+Run the model training script:
+
+```bash
 python train_inception.py
 ```
 
-The dataset must be obtained and configured separately before running the preprocessing and training workflow.
+**Note:** The required ECG dataset must be obtained and configured separately before running the preprocessing and training workflow.
 
 ## 📚 Project Presentation
 
 For additional information about the project, refer to the presentation included in this repository:
 
-[XAI-Driven Analysis of Physiological Signals – Project Presentation](XAI-Driven%20Analysis%20of%20Physiological%5B1%5D.pptx)
+[View Project Presentation](XAI-Driven%20Analysis%20of%20Physiological%5B1%5D.pptx)
 
 ## ⚠️ Disclaimer
 
